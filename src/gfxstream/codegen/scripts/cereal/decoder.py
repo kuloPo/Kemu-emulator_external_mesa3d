@@ -161,7 +161,7 @@ def emit_param_decl_for_reading(param, cgen):
         cgen.stmt(
             cgen.makeRichCTypeDecl(param))
 
-def emit_unmarshal(typeInfo, param, cgen, output = False, destroy = False, noUnbox = False):
+def emit_unmarshal(typeInfo, param, cgen, output = False, destroy = False, noUnbox = False, tryUnbox = False):
     if destroy:
         iterateVulkanType(typeInfo, param, VulkanReservedMarshalingCodegen(
             cgen,
@@ -199,7 +199,7 @@ def emit_unmarshal(typeInfo, param, cgen, output = False, destroy = False, noUnb
             param.paramName,
             "readStreamPtrPtr",
             API_PREFIX_RESERVEDUNMARSHAL,
-            "" if (output or noUnbox) else "unbox_",
+            "" if (output or noUnbox) else ("try_unbox_" if tryUnbox else "unbox_"),
             direction="read",
             dynAlloc=True))
 
@@ -327,12 +327,20 @@ def emit_decode_parameters(typeInfo: VulkanTypeInfo, api: VulkanAPI, cgen, globa
                 cgen.stmt("// Begin manual dispatchable handle unboxing for %s" % p.paramName)
                 cgen.stmt("%s->unsetHandleMapping()" % READ_STREAM)
 
-            emit_unmarshal(typeInfo, p, cgen, output = p.possiblyOutput(), destroy = destroy, noUnbox = noUnbox)
+            emit_unmarshal(typeInfo, p, cgen, output = p.possiblyOutput(), destroy = destroy,
+                           noUnbox = noUnbox,
+                           tryUnbox = api.name == "vkCmdCopyBuffer" and p.typeName == "VkBuffer")
 
     for p in paramsToRead:
         emit_transform(typeInfo, p, cgen, variant="tohost")
 
     emit_call_log(api, cgen)
+
+    if api.name == "vkCmdCopyBuffer":
+        cgen.stmt("const bool validCopyBuffers = srcBuffer != VK_NULL_HANDLE && dstBuffer != VK_NULL_HANDLE")
+        cgen.beginIf("!validCopyBuffers")
+        cgen.stmt('GFXSTREAM_WARNING("Skipping vkCmdCopyBuffer with invalid buffer (src=%p, dst=%p)", srcBuffer, dstBuffer)')
+        cgen.endIf()
 
 def emit_dispatch_call(api, cgen):
 
@@ -360,6 +368,8 @@ def emit_dispatch_call(api, cgen):
 
     whichDispatch = "vk->"
     checkDispatcher = "CC_LIKELY(vk)"
+    if api.name == "vkCmdCopyBuffer":
+        checkDispatcher += " && validCopyBuffers"
     if api.name in GLOBAL_COMMANDS_WITHOUT_DISPATCH:
         whichDispatch = "m_vk->"
         checkDispatcher = None
@@ -525,7 +535,7 @@ def emit_snapshot(typeInfo, api, cgen):
         api.withCustomReturnType(makeVulkanTypeSimple(False, "void", 0, "void")). \
             withCustomParameters(customParams)
 
-    cgen.beginIf("m_snapshotsEnabled")
+    cgen.beginIf("m_snapshotsEnabled && validCopyBuffers" if api.name == "vkCmdCopyBuffer" else "m_snapshotsEnabled")
     cgen.vkApiCall(apiForSnapshot, customPrefix="m_state->snapshot()->")
     cgen.endIf()
 

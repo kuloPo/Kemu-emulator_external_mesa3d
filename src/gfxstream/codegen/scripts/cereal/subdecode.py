@@ -53,7 +53,7 @@ def emit_param_decl_for_reading(param, cgen):
             typeHere, "*" * (param.pointerIndirectionLevels - 1), param.paramName, arrSize))
 
 
-def emit_unmarshal(typeInfo, param, cgen, output=False, destroy=False, noUnbox=False):
+def emit_unmarshal(typeInfo, param, cgen, output=False, destroy=False, noUnbox=False, tryUnbox=False):
     if destroy:
         iterateVulkanType(typeInfo, param, VulkanReservedMarshalingCodegen(
             cgen,
@@ -101,7 +101,7 @@ def emit_unmarshal(typeInfo, param, cgen, output=False, destroy=False, noUnbox=F
             param.paramName,
             "readStreamPtrPtr",
             API_PREFIX_RESERVEDUNMARSHAL,
-            "" if (output or noUnbox) else "unbox_",
+            "" if (output or noUnbox) else ("try_unbox_" if tryUnbox else "unbox_"),
             direction="read",
             dynAlloc=True,
             stackVar="stack_%s" % param.paramName,
@@ -238,13 +238,20 @@ def emit_decode_parameters(typeInfo, api, cgen, globalWrapped=False):
                 cgen.stmt("%s->unsetHandleMapping()" % READ_STREAM)
 
             emit_unmarshal(typeInfo, p, cgen, output=p.possiblyOutput(
-            ), destroy=destroy, noUnbox=noUnbox)
+            ), destroy=destroy, noUnbox=noUnbox,
+                tryUnbox=api.name == "vkCmdCopyBuffer" and p.typeName == "VkBuffer")
         i += 1
 
     for p in paramsToRead:
         emit_transform(typeInfo, p, cgen, variant="tohost")
 
     emit_call_log(api, cgen)
+
+    if api.name == "vkCmdCopyBuffer":
+        cgen.stmt("const bool validCopyBuffers = srcBuffer != VK_NULL_HANDLE && dstBuffer != VK_NULL_HANDLE")
+        cgen.beginIf("!validCopyBuffers")
+        cgen.stmt('GFXSTREAM_WARNING("Skipping vkCmdCopyBuffer with invalid buffer (src=%p, dst=%p)", srcBuffer, dstBuffer)')
+        cgen.endIf()
 
 def emit_snapshot_call(api, cgen):
     apiForSnapshot = \
@@ -256,7 +263,7 @@ def emit_snapshot_call(api, cgen):
         customParamsSnapshot.append(retVar)
     customParamsSnapshot.append("(VkCommandBuffer)(boxed_dispatchHandle)")
     customParamsSnapshot = customParamsSnapshot + list(map(lambda p: p.paramName, api.parameters[1:]))
-    cgen.beginIf("snapshotsEnabled()")
+    cgen.beginIf("snapshotsEnabled() && validCopyBuffers" if api.name == "vkCmdCopyBuffer" else "snapshotsEnabled()")
     cgen.vkApiCall(apiForSnapshot, customPrefix="this->snapshot()->", customParameters=customParamsSnapshot)
     cgen.endIf()
 
@@ -275,9 +282,12 @@ def emit_dispatch_call(api, cgen):
     if api.name in driver_workarounds_global_lock_apis:
         cgen.stmt("lock()")
 
+    checkDispatcher = "CC_LIKELY(vk)"
+    if api.name == "vkCmdCopyBuffer":
+        checkDispatcher += " && validCopyBuffers"
     cgen.vkApiCall(api, customPrefix="vk->", customParameters=customParams,
                     checkForDeviceLost=True, globalStatePrefix=global_state_prefix,
-                    checkDispatcher="CC_LIKELY(vk)")
+                    checkDispatcher=checkDispatcher)
 
     emit_snapshot_call(api, cgen)
 

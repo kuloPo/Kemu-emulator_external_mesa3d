@@ -88,6 +88,7 @@ SUPPORTED_FEATURES = [
     "VK_KHR_create_renderpass2",
     "VK_KHR_imageless_framebuffer",
     "VK_KHR_descriptor_update_template",
+    "VK_KHR_push_descriptor",
     "VK_EXT_depth_clip_enable",
     "VK_EXT_robustness2",
     "VK_KHR_multiview",

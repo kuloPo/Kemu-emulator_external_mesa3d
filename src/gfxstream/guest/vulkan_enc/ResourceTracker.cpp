@@ -3385,15 +3385,17 @@ VkResult ResourceTracker::on_vkAllocateMemory(void* context, VkResult input_resu
                                               const VkMemoryAllocateInfo* pAllocateInfo,
                                               const VkAllocationCallbacks* pAllocator,
                                               VkDeviceMemory* pMemory) {
-#define _RETURN_FAILURE_WITH_DEVICE_MEMORY_REPORT(result)                                      \
-    {                                                                                          \
-        auto it = info_VkDevice.find(device);                                                  \
-        if (it == info_VkDevice.end()) return result;                                          \
-        emitDeviceMemoryReport(it->second,                                                     \
-                               VK_DEVICE_MEMORY_REPORT_EVENT_TYPE_ALLOCATION_FAILED_EXT, 0,    \
-                               pAllocateInfo->allocationSize, VK_OBJECT_TYPE_DEVICE_MEMORY, 0, \
-                               pAllocateInfo->memoryTypeIndex);                                \
-        return result;                                                                         \
+#define _RETURN_FAILURE_WITH_DEVICE_MEMORY_REPORT(result)                                       \
+    {                                                                                           \
+        auto it = info_VkDevice.find(device);                                                   \
+        if (it == info_VkDevice.end()) return result;                                           \
+        const uint32_t heapIndex =                                                              \
+            it->second.memProps.memoryTypes[pAllocateInfo->memoryTypeIndex].heapIndex;          \
+        emitDeviceMemoryReport(it->second,                                                      \
+                               VK_DEVICE_MEMORY_REPORT_EVENT_TYPE_ALLOCATION_FAILED_EXT, 0,     \
+                               pAllocateInfo->allocationSize, VK_OBJECT_TYPE_DEVICE_MEMORY, 0,  \
+                               heapIndex);                                                      \
+        return result;                                                                          \
     }
 
     if (input_result != VK_SUCCESS) _RETURN_FAILURE_WITH_DEVICE_MEMORY_REPORT(input_result);
@@ -4124,7 +4126,7 @@ VkResult ResourceTracker::on_vkAllocateMemory(void* context, VkResult input_resu
                                         : VK_DEVICE_MEMORY_REPORT_EVENT_TYPE_ALLOCATE_EXT,
                                memoryObjectId, pAllocateInfo->allocationSize,
                                VK_OBJECT_TYPE_DEVICE_MEMORY, (uint64_t)(void*)*pMemory,
-                               pAllocateInfo->memoryTypeIndex);
+                               physicalDeviceMemoryProps.memoryTypes[pAllocateInfo->memoryTypeIndex].heapIndex);
         return VK_SUCCESS;
     }
 
@@ -4181,7 +4183,7 @@ VkResult ResourceTracker::on_vkAllocateMemory(void* context, VkResult input_resu
                                     : VK_DEVICE_MEMORY_REPORT_EVENT_TYPE_ALLOCATE_EXT,
                            memoryObjectId, pAllocateInfo->allocationSize,
                            VK_OBJECT_TYPE_DEVICE_MEMORY, (uint64_t)(void*)*pMemory,
-                           pAllocateInfo->memoryTypeIndex);
+                           physicalDeviceMemoryProps.memoryTypes[pAllocateInfo->memoryTypeIndex].heapIndex);
     return VK_SUCCESS;
 }
 

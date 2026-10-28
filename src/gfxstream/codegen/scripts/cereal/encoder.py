@@ -129,12 +129,19 @@ def emit_custom_pre_validate(typeInfo, api, cgen):
 
 def emit_custom_resource_preprocess(typeInfo, api, cgen):
     if api.name in ENCODER_CUSTOM_RESOURCE_PREPROCESS:
-        cgen.stmt( \
-            make_event_handler_call( \
+        callExpr = make_event_handler_call( \
                 "sResourceTracker", api,
                 ENCODER_THIS_PARAM,
                 SUCCESS_RET_TYPES[api.getRetTypeExpr()],
-                cgen, suffix="_pre"))
+                cgen, suffix="_pre")
+        if api.getRetTypeExpr() == "VkResult":
+            cgen.stmt("VkResult preprocessResult = %s" % callExpr)
+            cgen.beginIf("preprocessResult != VK_SUCCESS")
+            emit_unlock(cgen)
+            cgen.stmt("return preprocessResult")
+            cgen.endIf()
+        else:
+            cgen.stmt(callExpr)
 
 def emit_custom_resource_postprocess(typeInfo, api, cgen):
     if api.name in ENCODER_CUSTOM_RESOURCE_POSTPROCESS:

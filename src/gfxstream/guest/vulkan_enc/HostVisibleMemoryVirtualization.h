@@ -54,6 +54,7 @@ class CoherentMemory {
 
     uint8_t* mBaseAddr = nullptr;
     struct mem_block* mHeap = nullptr;
+    bool mWholeAllocationInUse = false;
 };
 
 using CoherentMemoryPtr = std::shared_ptr<CoherentMemory>;

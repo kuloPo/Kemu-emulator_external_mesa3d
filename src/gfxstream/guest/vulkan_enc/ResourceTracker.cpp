@@ -6661,7 +6661,9 @@ VkResult ResourceTracker::on_vkMapMemoryIntoAddressSpaceGOOGLE_pre(void*, VkResu
     auto& memInfo = it->second;
 
     GoldfishAddressSpaceBlockPtr block = std::make_shared<GoldfishAddressSpaceBlock>();
-    block->allocate(mGoldfishAddressSpaceBlockProvider.get(), memInfo.coherentMemorySize);
+    if (!block->allocate(mGoldfishAddressSpaceBlockProvider.get(), memInfo.coherentMemorySize)) {
+        return VK_ERROR_OUT_OF_HOST_MEMORY;
+    }
 
     memInfo.goldfishBlock = block;
     *pAddress = block->physAddr();

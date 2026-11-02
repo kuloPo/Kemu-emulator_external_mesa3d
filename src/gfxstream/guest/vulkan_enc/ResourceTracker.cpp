@@ -5822,6 +5822,9 @@ VkResult ResourceTracker::on_vkCreateSemaphore(void* context, VkResult input_res
     auto& info = it->second;
 
     info.device = device;
+    const VkSemaphoreTypeCreateInfo* typeInfo =
+        vk_find_struct_const(pCreateInfo, SEMAPHORE_TYPE_CREATE_INFO);
+    info.isTimeline = typeInfo && typeInfo->semaphoreType == VK_SEMAPHORE_TYPE_TIMELINE;
     info.eventHandle = event_handle;
 #ifdef VK_USE_PLATFORM_FUCHSIA
     info.eventKoid = getEventKoid(info.eventHandle);
@@ -6180,34 +6183,6 @@ VkResult ResourceTracker::on_vkQueueSubmit(void* context, VkResult input_result,
     MESA_TRACE_SCOPE("on_vkQueueSubmit");
     EmitGuestAndHostTraceMarker((VkEncoder*)context);
 
-    /* From the Vulkan 1.3.204 spec:
-     *
-     *    VUID-VkSubmitInfo-pNext-03240
-     *
-     *    "If the pNext chain of this structure includes a VkTimelineSemaphoreSubmitInfo structure
-     *    and any element of pSignalSemaphores was created with a VkSemaphoreType of
-     *    VK_SEMAPHORE_TYPE_TIMELINE, then its signalSemaphoreValueCount member must equal
-     *    signalSemaphoreCount"
-     *
-     * Internally, Mesa WSI creates placeholder semaphores/fences (see transformVkSemaphore functions
-     * in in gfxstream_vk_private.cpp).  We don't want to forward that to the host, since there is
-     * no host side Vulkan object associated with the placeholder sync objects.
-     *
-     * The way to test this behavior is Zink + glxgears, on Linux hosts.  It should fail without
-     * this check.
-     */
-    for (uint32_t i = 0; i < submitCount; i++) {
-        VkTimelineSemaphoreSubmitInfo* tssi =
-            vk_find_struct(const_cast<VkSubmitInfo*>(&pSubmits[i]), TIMELINE_SEMAPHORE_SUBMIT_INFO);
-
-        if (tssi) {
-            uint32_t count = getSignalSemaphoreCount(pSubmits[i]);
-            if (count != tssi->signalSemaphoreValueCount) {
-                tssi->signalSemaphoreValueCount = count;
-            }
-        }
-    }
-
     return on_vkQueueSubmitTemplate<VkSubmitInfo, VkSemaphore>(context, input_result, queue, submitCount,
                                                   pSubmits, fence);
 }
@@ -6241,13 +6216,15 @@ VkResult ResourceTracker::vkQueueSubmitEnc(VkEncoder* enc, VkQueue queue, uint32
     }
 }
 
-static void pruneWaitSemaphores(const std::vector<VkSemaphore> toRemove,
+template <typename IsTimelineSemaphore>
+static void pruneWaitSemaphores(const std::vector<VkSemaphore>& toRemove,
     VkSubmitInfo& submitInfo,
     const VkTimelineSemaphoreSubmitInfo* currTssi,
     std::vector<VkSemaphore>& newSemList,
     std::vector<VkPipelineStageFlags>& newWaitDstStageMaskList,
     VkTimelineSemaphoreSubmitInfo& newTssi,
-    std::vector<uint64_t>& newSemValueList)
+    std::vector<uint64_t>& newSemValueList,
+    IsTimelineSemaphore isTimelineSemaphore)
 {
     newSemList.clear();
     newSemValueList.clear();
@@ -6257,7 +6234,10 @@ static void pruneWaitSemaphores(const std::vector<VkSemaphore> toRemove,
             newSemList.push_back(submitInfo.pWaitSemaphores[i]);
             newWaitDstStageMaskList.push_back(submitInfo.pWaitDstStageMask[i]);
             if (currTssi) {
-                newSemValueList.push_back(currTssi->pWaitSemaphoreValues[i]);
+                // Binary semaphore values are ignored and may be absent from the array.
+                newSemValueList.push_back(isTimelineSemaphore(submitInfo.pWaitSemaphores[i])
+                                              ? currTssi->pWaitSemaphoreValues[i]
+                                              : 0);
             }
         }
     }
@@ -6271,13 +6251,15 @@ static void pruneWaitSemaphores(const std::vector<VkSemaphore> toRemove,
     }
 }
 
-static void pruneWaitSemaphores(const std::vector<VkSemaphore> toRemove,
+template <typename IsTimelineSemaphore>
+static void pruneWaitSemaphores(const std::vector<VkSemaphore>& toRemove,
     VkSubmitInfo2& submitInfo,
     const VkTimelineSemaphoreSubmitInfo* currTssi,
     std::vector<VkSemaphoreSubmitInfo>& newSemList,
     std::vector<VkPipelineStageFlags>& newWaitDstStageMaskList,
     VkTimelineSemaphoreSubmitInfo& newTssi,
-    std::vector<uint64_t>& newSemValueList)
+    std::vector<uint64_t>& newSemValueList,
+    IsTimelineSemaphore /*isTimelineSemaphore*/)
 {
     // All of this info is contained in VkSubmitInfo2, so goes unused in this implementation
     // of pruneWaitSemaphores
@@ -6295,12 +6277,14 @@ static void pruneWaitSemaphores(const std::vector<VkSemaphore> toRemove,
     submitInfo.pWaitSemaphoreInfos = newSemList.data();
 }
 
-static void pruneSignalSemaphores(const std::vector<VkSemaphore> toRemove,
+template <typename IsTimelineSemaphore>
+static void pruneSignalSemaphores(const std::vector<VkSemaphore>& toRemove,
     VkSubmitInfo& submitInfo,
     const VkTimelineSemaphoreSubmitInfo* currTssi,
     std::vector<VkSemaphore>& newSemList,
     VkTimelineSemaphoreSubmitInfo& newTssi,
-    std::vector<uint64_t>& newSemValueList)
+    std::vector<uint64_t>& newSemValueList,
+    IsTimelineSemaphore isTimelineSemaphore)
 {
     newSemList.clear();
     newSemValueList.clear();
@@ -6309,7 +6293,10 @@ static void pruneSignalSemaphores(const std::vector<VkSemaphore> toRemove,
         if (it == toRemove.end()) {
             newSemList.push_back(submitInfo.pSignalSemaphores[i]);
             if (currTssi) {
-                newSemValueList.push_back(currTssi->pSignalSemaphoreValues[i]);
+                // Binary semaphore values are ignored and may be absent from the array.
+                newSemValueList.push_back(isTimelineSemaphore(submitInfo.pSignalSemaphores[i])
+                                              ? currTssi->pSignalSemaphoreValues[i]
+                                              : 0);
             }
         }
     }
@@ -6322,12 +6309,14 @@ static void pruneSignalSemaphores(const std::vector<VkSemaphore> toRemove,
     }
 }
 
-static void pruneSignalSemaphores(const std::vector<VkSemaphore> toRemove,
+template <typename IsTimelineSemaphore>
+static void pruneSignalSemaphores(const std::vector<VkSemaphore>& toRemove,
     VkSubmitInfo2& submitInfo,
     const VkTimelineSemaphoreSubmitInfo* currTssi,
     std::vector<VkSemaphoreSubmitInfo>& newSemList,
     VkTimelineSemaphoreSubmitInfo& newTssi,
-    std::vector<uint64_t>& newSemValueList)
+    std::vector<uint64_t>& newSemValueList,
+    IsTimelineSemaphore /*isTimelineSemaphore*/)
 {
     // All of this info is contained in VkSubmitInfo2, so goes unused in this implementation
     // of pruneSignalSemaphores
@@ -6437,8 +6426,17 @@ VkResult ResourceTracker::on_vkQueueSubmitTemplate(void* context, VkResult input
                 .pNext = NULL
             };
             // Finally, prune the wait/signal semaphores accordingly!
-            pruneWaitSemaphores(waitSemsToRemove, prunedSubmitInfos[i], currTssi, prunedWaitSemaphoreLists[i], prunedWaitDstStageMaskFlagLists[i], prunedTssis[i], prunedWaitSemaphoreValueLists[i]);
-            pruneSignalSemaphores(signalSemsToRemove, prunedSubmitInfos[i], currTssi, prunedSignalSemaphoreLists[i], prunedTssis[i], prunedSignalSemaphoreValueLists[i]);
+            auto isTimelineSemaphore = [this](VkSemaphore semaphore) {
+                auto it = info_VkSemaphore.find(semaphore);
+                return it != info_VkSemaphore.end() && it->second.isTimeline;
+            };
+            pruneWaitSemaphores(waitSemsToRemove, prunedSubmitInfos[i], currTssi,
+                                prunedWaitSemaphoreLists[i], prunedWaitDstStageMaskFlagLists[i],
+                                prunedTssis[i], prunedWaitSemaphoreValueLists[i],
+                                isTimelineSemaphore);
+            pruneSignalSemaphores(signalSemsToRemove, prunedSubmitInfos[i], currTssi,
+                                  prunedSignalSemaphoreLists[i], prunedTssis[i],
+                                  prunedSignalSemaphoreValueLists[i], isTimelineSemaphore);
         }
     }
 

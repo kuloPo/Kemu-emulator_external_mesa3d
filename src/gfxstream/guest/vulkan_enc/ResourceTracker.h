@@ -792,6 +792,7 @@ class ResourceTracker {
 
     struct VkSemaphore_Info {
         VkDevice device;
+        bool isTimeline = false;
         zx_handle_t eventHandle = ZX_HANDLE_INVALID;
         zx_koid_t eventKoid = ZX_KOID_INVALID;
         std::optional<int> syncFd = {};
